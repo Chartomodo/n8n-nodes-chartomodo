@@ -100,7 +100,12 @@ export class ChartOmodo implements INodeType {
 						description: 'Create a dataset from every input item',
 					},
 					// Runs once per execution, not once per input item.
-					{ name: 'Get Many', value: 'getAll', action: 'Get many datasets' },
+					{
+						name: 'Get Many',
+						value: 'getAll',
+						action: 'Get many datasets',
+						description: 'List up to 500 datasets, newest first',
+					},
 					{
 						name: 'Replace Rows',
 						value: 'replace',
@@ -130,7 +135,12 @@ export class ChartOmodo implements INodeType {
 						description: 'Categories and series values',
 					},
 					// Runs once per execution, not once per input item.
-					{ name: 'Get Many', value: 'getAll', action: 'Get many charts' },
+					{
+						name: 'Get Many',
+						value: 'getAll',
+						action: 'Get many charts',
+						description: 'List up to 500 charts',
+					},
 				],
 				default: 'get',
 			},
@@ -140,6 +150,7 @@ export class ChartOmodo implements INodeType {
 				type: 'string',
 				default: '',
 				required: true,
+				description: 'Dataset name, 1–100 characters',
 				displayOptions: { show: { resource: ['dataset'], operation: ['create'] } },
 			},
 			{
