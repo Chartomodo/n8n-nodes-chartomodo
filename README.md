@@ -14,8 +14,6 @@ Once installed, the node type is `n8n-nodes-chartomodo.chartOmodo`.
 2. In n8n, create a **ChartOmodo API** credential and paste the token.
 3. Leave **Base URL** at `https://chartomodo.com`. It is the host only, without `/api/v1`.
 
-If you point the Base URL at a ChartOmodo instance on your own machine, use `http://127.0.0.1:3000` rather than `http://localhost:3000`. Node.js may resolve `localhost` to the IPv6 address `::1`, and the connection is refused when the server only listens on IPv4.
-
 ## Operations
 
 | Resource | Operation | What it does |
@@ -24,7 +22,7 @@ If you point the Base URL at a ChartOmodo instance on your own machine, use `htt
 | Dataset | Replace Rows | Replaces every row in the dataset with the input items, in one atomic request. |
 | Dataset | Append Rows | Adds the input items as new rows. Large inputs are split into several requests. |
 | Dataset | Get Many | Lists up to 500 datasets, newest first. |
-| Chart | Get | Returns a chart's title, type and embed URL. The embed URL is empty for private charts. |
+| Chart | Get | Returns a chart's title, type and embed URL. The embed URL is null for a private chart that has no embed link yet. |
 | Chart | Get Data | Returns a chart's categories and series values. |
 | Chart | Get Many | Lists up to 500 charts. |
 
@@ -37,7 +35,7 @@ Chart Get and Get Data run once per input item. Both Get Many operations run onc
 - Each item must be flat. Values can be text, numbers, true/false or empty. Flatten nested objects and arrays with a Set or Code node first.
 - Send dates as ISO strings, for example `2026-01-31`.
 - One request is at most 5 MB. A dataset holds at most 50,000 rows and 100 columns.
-- The API allows 60 requests per minute per token. On a 429 or 503 answer, the node waits for the `Retry-After` time (capped at 30 seconds) and retries, up to 3 times per request.
+- The API allows 60 requests per minute per token. On a 429 or 503 answer, the node waits for the `Retry-After` time (5 seconds if absent, capped at 30) and retries, up to 3 times per request. It does not retry when the API is disabled or in maintenance.
 
 ## Retries and duplicates
 
