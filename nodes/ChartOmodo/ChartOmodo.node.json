@@ -1,0 +1,10 @@
+{
+	"node": "n8n-nodes-chartomodo.chartOmodo",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Data & Storage", "Analytics"],
+	"resources": {
+		"credentialDocumentation": [{ "url": "https://chartomodo.com/developers/api" }],
+		"primaryDocumentation": [{ "url": "https://chartomodo.com/developers/api" }]
+	}
+}
