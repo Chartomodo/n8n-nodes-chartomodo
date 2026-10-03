@@ -15,7 +15,7 @@ function ctx(params, items, replies, { continueOnFail = false } = {}) {
     getNodeParameter: (name, _i, fallback) => params[name] ?? fallback,
     getExecutionId: () => '77',
     getNode: () => node,
-    getWorkflowDataProxy: () => ({ $thisRunIndex: 2 }),
+    getWorkflowDataProxy: () => ({ $runIndex: 2 }),
     continueOnFail: () => continueOnFail,
     getCredentials: async () => ({ baseUrl: 'https://c.com' }),
     helpers: {
@@ -91,7 +91,7 @@ test('replace over 5 MB: NodeOperationError, or an error item under continueOnFa
 });
 
 test('append: one request per byte-budget chunk, keys :0 and :1, dedup flagged', async () => {
-  const half = [{ json: { s: 'x'.repeat(2_100_000) } }, { json: { s: 'y'.repeat(2_100_000) } }];
+  const half = [{ json: { s: 'x'.repeat(2_500_000) } }, { json: { s: 'y'.repeat(2_500_000) } }];
   const c = ctx({ resource: 'dataset', operation: 'append', datasetId: 'd1' }, half, [
     { duplicate: true },
     { id: 'd1', rowCount: 9, columns: ['s'], addedColumns: [], droppedColumns: [] },
@@ -105,4 +105,25 @@ test('append: one request per byte-budget chunk, keys :0 and :1, dedup flagged',
   assert.deepEqual(out[0].json, {
     id: 'd1', rowCount: 9, columns: ['s'], addedColumns: [], droppedColumns: [], requests: 2, duplicate: true,
   });
+});
+
+test('append: a later chunk failing says how many rows already went in', async () => {
+  const half = [{ json: { s: 'x'.repeat(2_500_000) } }, { json: { s: 'y'.repeat(2_500_000) } }];
+  const params = { resource: 'dataset', operation: 'append', datasetId: 'd1' };
+  const fail = () => {
+    const axios = Object.assign(new Error('Request failed with status code 422'), {
+      isAxiosError: true,
+      response: { status: 422, headers: {}, data: { error: { code: 'invalid_rows', message: 'rows[0].s too long' } } },
+    });
+    return new NodeApiError(node, axios);
+  };
+  const ok = { id: 'd1', rowCount: 1, columns: ['s'], addedColumns: ['s'], droppedColumns: [] };
+  await assert.rejects(run(ctx(params, half, [ok, fail()])), (e) => {
+    assert.equal(e.message, 'rows[0].s too long');
+    assert.match(e.description, /^Request 2 of 2 failed; the first 1 rows were already appended \(row numbers in the message count from item 1\)/);
+    return true;
+  });
+  const [out] = await run(ctx(params, half, [ok, fail()], { continueOnFail: true }));
+  assert.deepEqual(out[0].json, { error: 'rows[0].s too long', code: 'invalid_rows', appendedRows: 1 });
+  assert.deepEqual(out[0].pairedItem, [{ item: 0 }, { item: 1 }]);
 });

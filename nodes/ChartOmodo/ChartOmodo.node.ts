@@ -15,7 +15,6 @@ import { chunkRows, jsonBytes, pickFields, writeSummary } from './rows';
 
 /** The API refuses bodies over 5 MB; stay under it with room for headers. */
 const MAX_BODY_BYTES = 4_900_000;
-const APPEND_CHUNK_BYTES = 4_000_000;
 
 const datasetLocator = {
 	displayName: 'Dataset',
@@ -218,7 +217,7 @@ export class ChartOmodo implements INodeType {
 				const key = idempotencyKeyPrefix(
 					this.getExecutionId(),
 					this.getNode().id,
-					this.getWorkflowDataProxy(0).$thisRunIndex,
+					this.getWorkflowDataProxy(0).$runIndex as number,
 				);
 				const responses: IDataObject[] = [];
 				if (operation === 'replace') {
@@ -228,19 +227,28 @@ export class ChartOmodo implements INodeType {
 						await apiRequest.call(this, 'PUT', path, { rows }, { 'Idempotency-Key': `${key}:0` }),
 					);
 				} else {
-					const chunks = chunkRows(rows, APPEND_CHUNK_BYTES);
+					const chunks = chunkRows(rows, MAX_BODY_BYTES);
+					let sent = 0;
 					for (let n = 0; n < chunks.length; n++) {
-						responses.push(
-							await apiRequest.call(
-								this,
-								'POST',
-								path,
-								{ rows: chunks[n] },
-								{
-									'Idempotency-Key': `${key}:${n}`,
-								},
-							),
-						);
+						try {
+							responses.push(
+								await apiRequest.call(
+									this,
+									'POST',
+									path,
+									{ rows: chunks[n] },
+									{ 'Idempotency-Key': `${key}:${n}` },
+								),
+							);
+						} catch (error) {
+							// Earlier chunks are committed; say so, and that row numbers are chunk-relative.
+							if (n > 0 && error instanceof NodeApiError) {
+								error.description = `Request ${n + 1} of ${chunks.length} failed; the first ${sent} rows were already appended (row numbers in the message count from item ${sent}). Retry On Fail skips them; running the workflow again appends them again.`;
+								error.context.appendedRows = sent;
+							}
+							throw nodeError(this, error);
+						}
+						sent += chunks[n].length;
 					}
 				}
 				return [[{ json: writeSummary(id, responses), pairedItem }]];
@@ -316,8 +324,14 @@ function nodeError(ctx: IExecuteFunctions, error: unknown, itemIndex?: number) {
 	return new NodeOperationError(ctx.getNode(), error as Error, { itemIndex });
 }
 
-/** continueOnFail output. apiMessage() prefers `description`, which on our own errors is the hint. */
+/** continueOnFail output. Not apiMessage() for our own errors: it prefers `description`, which there is a hint or note. */
 function failure(error: unknown): IDataObject {
+	if (error instanceof NodeApiError) {
+		// apiRequest already set message to the API's text; description may be our partial-append note.
+		const out: IDataObject = { error: error.message, code: apiCode(error) };
+		if (error.context.appendedRows !== undefined) out.appendedRows = error.context.appendedRows;
+		return out;
+	}
 	const message = error instanceof NodeOperationError ? error.message : apiMessage(error);
 	return { error: message, code: apiCode(error) };
 }
