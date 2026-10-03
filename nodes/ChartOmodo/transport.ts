@@ -98,7 +98,6 @@ export async function apiRequest(
 				const cause = (error as { cause?: unknown }).cause ?? error;
 				throw new NodeApiError(this.getNode(), cause as JsonObject, {
 					message: apiMessage(error),
-					description: apiCode(error),
 				});
 			}
 			const signal = 'getExecutionCancelSignal' in this ? this.getExecutionCancelSignal() : undefined;
