@@ -1,12 +1,21 @@
 import {
+	NodeApiError,
 	NodeConnectionTypes,
+	NodeOperationError,
 	type IDataObject,
+	type IExecuteFunctions,
 	type ILoadOptionsFunctions,
+	type INodeExecutionData,
 	type INodeListSearchResult,
 	type INodeType,
 	type INodeTypeDescription,
 } from 'n8n-workflow';
-import { apiRequest } from './transport';
+import { apiCode, apiMessage, apiRequest, idempotencyKeyPrefix } from './transport';
+import { chunkRows, jsonBytes, pickFields, writeSummary } from './rows';
+
+/** The API refuses bodies over 5 MB; stay under it with room for headers. */
+const MAX_BODY_BYTES = 4_900_000;
+const APPEND_CHUNK_BYTES = 4_000_000;
 
 const datasetLocator = {
 	displayName: 'Dataset',
@@ -46,7 +55,10 @@ export class ChartOmodo implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'ChartOmodo',
 		name: 'chartOmodo',
-		icon: { light: 'file:../../icons/chartomodo.svg', dark: 'file:../../icons/chartomodo.dark.svg' },
+		icon: {
+			light: 'file:../../icons/chartomodo.svg',
+			dark: 'file:../../icons/chartomodo.dark.svg',
+		},
 		group: ['output'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -172,7 +184,92 @@ export class ChartOmodo implements INodeType {
 		},
 	};
 
-	// execute() — Task 5
+	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
+		const items = this.getInputData();
+		const resource = this.getNodeParameter('resource', 0) as string;
+		const operation = this.getNodeParameter('operation', 0) as string;
+
+		// Dataset writes take ALL items as rows of ONE write: one output item, paired to every input.
+		if (resource === 'dataset' && ['create', 'replace', 'append'].includes(operation)) {
+			const pairedItem = items.map((_, i) => ({ item: i }));
+			try {
+				const fields = this.getNodeParameter('fields', 0, '') as string;
+				const rows = items.map((item) => pickFields(item.json, fields));
+				if (operation === 'create') {
+					// POST /datasets takes no Idempotency-Key.
+					const name = this.getNodeParameter('name', 0) as string;
+					assertFits(this, { name, rows });
+					const res = await apiRequest.call(this, 'POST', '/datasets', { name, rows });
+					return [[{ json: writeSummary(undefined, [res]), pairedItem }]];
+				}
+				const id = this.getNodeParameter('datasetId', 0, '', { extractValue: true }) as string;
+				const path = `/datasets/${encodeURIComponent(id)}/rows`;
+				const key = idempotencyKeyPrefix(
+					this.getExecutionId(),
+					this.getNode().id,
+					this.getWorkflowDataProxy(0).$thisRunIndex,
+				);
+				const responses: IDataObject[] = [];
+				if (operation === 'replace') {
+					// Replace must be one request: splitting it would show half the data between requests.
+					assertFits(this, { rows });
+					responses.push(
+						await apiRequest.call(this, 'PUT', path, { rows }, { 'Idempotency-Key': `${key}:0` }),
+					);
+				} else {
+					const chunks = chunkRows(rows, APPEND_CHUNK_BYTES);
+					for (let n = 0; n < chunks.length; n++) {
+						responses.push(
+							await apiRequest.call(
+								this,
+								'POST',
+								path,
+								{ rows: chunks[n] },
+								{
+									'Idempotency-Key': `${key}:${n}`,
+								},
+							),
+						);
+					}
+				}
+				return [[{ json: writeSummary(id, responses), pairedItem }]];
+			} catch (error) {
+				if (this.continueOnFail()) return [[{ json: failure(error), pairedItem }]];
+				throw nodeError(this, error);
+			}
+		}
+
+		// List operations run once, not once per input item.
+		if (operation === 'getAll') {
+			try {
+				const res = await apiRequest.call(
+					this,
+					'GET',
+					resource === 'dataset' ? '/datasets' : '/charts',
+				);
+				return [(res.data as IDataObject[]).map((json) => ({ json, pairedItem: { item: 0 } }))];
+			} catch (error) {
+				if (this.continueOnFail()) return [[{ json: failure(error), pairedItem: { item: 0 } }]];
+				throw nodeError(this, error);
+			}
+		}
+
+		const out: INodeExecutionData[] = [];
+		for (let i = 0; i < items.length; i++) {
+			try {
+				const id = this.getNodeParameter('chartId', i, '', { extractValue: true }) as string;
+				const path = `/charts/${encodeURIComponent(id)}${operation === 'getData' ? '/data' : ''}`;
+				out.push({ json: await apiRequest.call(this, 'GET', path), pairedItem: { item: i } });
+			} catch (error) {
+				if (this.continueOnFail()) {
+					out.push({ json: failure(error), pairedItem: { item: i } });
+					continue;
+				}
+				throw nodeError(this, error, i);
+			}
+		}
+		return [out];
+	}
 }
 
 function toResults(list: IDataObject[], label: string, filter?: string) {
@@ -180,4 +277,36 @@ function toResults(list: IDataObject[], label: string, filter?: string) {
 	return list
 		.filter((d) => !f || String(d[label]).toLowerCase().includes(f))
 		.map((d) => ({ name: String(d[label]), value: String(d.id) }));
+}
+
+function assertFits(ctx: IExecuteFunctions, body: IDataObject) {
+	if (jsonBytes(body) > MAX_BODY_BYTES) {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			'These rows are larger than the 5 MB the API accepts in one request.',
+			{
+				description:
+					'Send fewer items, list only the needed columns in "Fields to Send", or use Create once and then Append Rows, which splits large inputs.',
+			},
+		);
+	}
+}
+
+/**
+ * apiRequest already throws NodeApiError with the API's message; re-wrapping it would be a no-op
+ * that drops itemIndex, so set that directly. Anything else (bad parameter, size check) is an
+ * operation error.
+ */
+function nodeError(ctx: IExecuteFunctions, error: unknown, itemIndex?: number) {
+	if (error instanceof NodeApiError) {
+		if (itemIndex !== undefined) error.context.itemIndex = itemIndex;
+		return error;
+	}
+	return new NodeOperationError(ctx.getNode(), error as Error, { itemIndex });
+}
+
+/** continueOnFail output. apiMessage() prefers `description`, which on our own errors is the hint. */
+function failure(error: unknown): IDataObject {
+	const message = error instanceof NodeOperationError ? error.message : apiMessage(error);
+	return { error: message, code: apiCode(error) };
 }
