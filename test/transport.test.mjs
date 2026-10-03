@@ -69,3 +69,14 @@ test('apiRequest retries a transient error, then throws the API message without 
   });
   assert.equal(calls.length, 3);
 });
+
+test('idempotencyKeyPrefix: execution:node:run, random when the execution id is missing or unusable', () => {
+  const { idempotencyKeyPrefix } = transport;
+  assert.equal(idempotencyKeyPrefix('42', 'node-uuid', 3), '42:node-uuid:3');
+  const valid = /^[!-~]{1,240}$/;
+  for (const k of [idempotencyKeyPrefix('', 'n', 0), idempotencyKeyPrefix('has space', 'n', 0), idempotencyKeyPrefix('x'.repeat(300), 'n', 0)]) {
+    assert.match(k, valid);
+    assert.match(k, /^[0-9a-f-]{36}$/);
+  }
+  assert.notEqual(idempotencyKeyPrefix('', 'n', 0), idempotencyKeyPrefix('', 'n', 0));
+});

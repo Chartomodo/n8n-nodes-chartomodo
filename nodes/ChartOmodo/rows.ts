@@ -39,3 +39,26 @@ export function chunkRows(rows: IDataObject[], maxBytes: number): IDataObject[][
 	if (current.length > 0) chunks.push(current);
 	return chunks;
 }
+
+/**
+ * One output item for a dataset write made of one or more requests. A deduped request
+ * (`{"duplicate":true}`, sent again with an Idempotency-Key the API already applied) carries no
+ * counts, so counts come from the last request that actually wrote.
+ */
+export function writeSummary(datasetId: string | undefined, responses: IDataObject[]): IDataObject {
+	const fresh = responses.filter((r) => r.duplicate !== true);
+	const last = fresh[fresh.length - 1] ?? {};
+	const union = (key: string) => [
+		...new Set(fresh.flatMap((r) => (r[key] as string[] | undefined) ?? [])),
+	];
+	const summary: IDataObject = {
+		id: last.id ?? datasetId,
+		rowCount: last.rowCount,
+		columns: last.columns,
+		addedColumns: union('addedColumns'),
+		droppedColumns: union('droppedColumns'),
+		requests: responses.length,
+	};
+	if (fresh.length < responses.length) summary.duplicate = true;
+	return summary;
+}

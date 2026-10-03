@@ -27,3 +27,19 @@ test('chunkRows puts one oversized row in its own chunk instead of looping', () 
 test('jsonBytes counts UTF-8 bytes, not characters', () => {
   assert.equal(jsonBytes('é'), 4); // "\"é\"" = 1 + 2 + 1
 });
+
+test('writeSummary: counts from the last real write, unions column changes, flags dedup', () => {
+  const { writeSummary } = rows;
+  const a = { id: 'd1', rowCount: 2, columns: ['a'], addedColumns: ['a'], droppedColumns: [] };
+  const b = { id: 'd1', rowCount: 5, columns: ['a', 'b'], addedColumns: ['b'], droppedColumns: [] };
+  assert.deepEqual(writeSummary('d1', [a, b]), {
+    id: 'd1', rowCount: 5, columns: ['a', 'b'], addedColumns: ['a', 'b'], droppedColumns: [], requests: 2,
+  });
+  const dup = writeSummary('d1', [a, { duplicate: true }]);
+  assert.equal(dup.rowCount, 2);
+  assert.equal(dup.duplicate, true);
+  const allDup = writeSummary('d1', [{ duplicate: true }]);
+  assert.equal(allDup.id, 'd1');
+  assert.equal(allDup.rowCount, undefined);
+  assert.equal(allDup.duplicate, true);
+});

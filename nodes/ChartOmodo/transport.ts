@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NodeApiError, sleep } from 'n8n-workflow';
 import type {
 	IDataObject,
@@ -104,4 +105,22 @@ export async function apiRequest(
 			await sleep(delay, signal);
 		}
 	}
+}
+
+const IDEMPOTENCY_KEY = /^[!-~]{1,240}$/; // API allows 255; leave room for `:${chunk}`
+
+/**
+ * Idempotency-Key prefix for one node run; callers append `:${chunkIndex}`. Unique per run, not
+ * per execution: a node can run many times in one execution (loops, agent tool calls), and a
+ * reused key on the same dataset makes the API answer `{"duplicate":true}` and drop the rows.
+ * Retry On Fail keeps the same execution and run, so it dedups; a retry from history is a new
+ * execution and appends again. No usable execution id → random, which never dedups.
+ */
+export function idempotencyKeyPrefix(
+	executionId: string,
+	nodeId: string,
+	runIndex: number,
+): string {
+	const prefix = `${executionId}:${nodeId}:${runIndex}`;
+	return executionId && IDEMPOTENCY_KEY.test(prefix) ? prefix : randomUUID();
 }
